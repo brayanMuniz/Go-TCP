@@ -1,7 +1,6 @@
 package main
 
 import (
-	// "bufio"
 	"fmt"
 	"log"
 	"net"
@@ -25,6 +24,9 @@ type Message struct {
 	from    string
 	payload []byte
 	conn    net.Conn
+	Command string // First word of the payload
+	Content string // Rest of the message (e.g., username or message content)
+
 }
 
 type Server struct {
@@ -90,6 +92,40 @@ func (s *Server) acceptLoop() {
 
 }
 
+func (s *Server) parseMessage(msg *Message) {
+	// Split the payload into words
+	words := strings.Fields(string(msg.payload))
+
+	// Check if there are at least two words
+	if len(words) < 2 {
+		msg.Command = ""
+		msg.Content = ""
+		return
+	}
+
+	// Set the first word as the command
+	msg.Command = words[0]
+
+	// The rest of the payload (everything after the first word) is the content
+	firstSpaceIndex := strings.Index(string(msg.payload), " ")
+	msg.Content = strings.TrimSpace(string(msg.payload)[firstSpaceIndex+1:])
+}
+
+// Function to extract the message without the command
+func (msg *Message) getMessageWithoutCommand() string {
+	// Convert the payload to a string
+	messageText := string(msg.payload)
+
+	// Find the position of the first space after the command (first word)
+	firstSpaceIndex := strings.Index(messageText, " ")
+
+	// Return everything after the first space (the actual message)
+	if firstSpaceIndex != -1 && len(messageText) > firstSpaceIndex+1 {
+		return strings.TrimSpace(messageText[firstSpaceIndex+1:])
+	}
+	return ""
+}
+
 func (s *Server) addClient(conn net.Conn) {
 	addr := conn.RemoteAddr()
 	s.clients[addr] = conn // Add the client connection to the map
@@ -97,22 +133,8 @@ func (s *Server) addClient(conn net.Conn) {
 }
 
 // NOTE: usually you would just return an err type, but for the sake of the assignment, this will do
-func (s *Server) addUserNameToClient(msg Message) int {
-	// Split the payload into words
-	words := strings.Fields(string(msg.payload))
-
-	// Check if there are at least two words
-	if len(words) < 2 {
-		return ERR_UNKNOWN_MESSAGE_FORMAT // Return an error if the format is incorrect
-	}
-
-	// Find the position of the first space after the first word to slice the remaining part
-	messageText := string(msg.payload)
-	firstSpaceIndex := strings.Index(messageText, " ")
-
-	// The username is everything after the first word and the space
-	userName := strings.TrimSpace(messageText[firstSpaceIndex+1:])
-	fmt.Println(userName)
+func (s *Server) addUserNameToClient(msg *Message) int {
+	userName := msg.Content
 
 	// Check if the username is too long
 	if len(userName) > 20 {
@@ -133,7 +155,7 @@ func (s *Server) addUserNameToClient(msg Message) int {
 	s.userNames[userName] = msg.conn
 	fmt.Printf("Added %s to %s.\n", userName, msg.from)
 
-	return -1
+	return -1 // Success
 }
 
 func (s *Server) removeClient(conn net.Conn) {
@@ -160,21 +182,11 @@ func (s *Server) readLoop(conn net.Conn) {
 	}
 }
 
-func (s *Server) handleMessage(msg Message) {
-	// Convert message payload to a string
-	messageText := string(msg.payload)
+func (s *Server) handleMessage(msg *Message) {
+	// Parse the message into command and username
+	s.parseMessage(msg)
 
-	// Split the message into words to extract the first word as a command
-	words := strings.Fields(messageText)
-	if len(words) == 0 {
-		return // No command found, so skip processing
-	}
-
-	// Extract the first word (command)
-	command := words[0]
-
-	switch command {
-
+	switch msg.Command {
 	case "REG":
 		fmt.Printf("Handling username for %s\n", msg.from)
 		errCode := s.addUserNameToClient(msg)
@@ -196,17 +208,56 @@ func (s *Server) handleMessage(msg Message) {
 			// Send the error message back to the client
 			msg.conn.Write([]byte(fmt.Sprintf("Error: %s\n", errMsg)))
 		} else {
-			msg.conn.Write([]byte("Username registered successfully.\n"))
+			var userList []string
+			for username := range s.userNames {
+				userList = append(userList, username)
+			}
+			numberOfUsers := len(s.userNames)
+
+			// Format the message as a string (could also use JSON if needed)
+			userListMessage := fmt.Sprintf("%d %v\n", numberOfUsers, userList)
+
+			// Send the message to the current user
+			msg.conn.Write([]byte(userListMessage))
+
+			// Send message to all other users that username has joined chat.
+			newUserMessage := fmt.Sprintf("%s has joined the chat", msg.Content)
+			for _, conn := range s.clients {
+				if conn != msg.conn {
+					conn.Write([]byte(newUserMessage))
+				}
+			}
+
 		}
+
 	case "MESG":
-		fmt.Printf("Broadcasting message from %s\n", msg.from)
+		// Find the username from the map using the connection
+		var username string
+		for name, conn := range s.userNames {
+			if conn == msg.conn {
+				username = name
+				break
+			}
+		}
+
+		if username != "" {
+			newUserMessage := fmt.Sprintf("%s: %s\n", username, msg.getMessageWithoutCommand())
+			for _, conn := range s.clients {
+				if conn != msg.conn {
+					conn.Write([]byte(newUserMessage))
+				}
+			}
+		} else {
+			msg.conn.Write([]byte("Error: Username not found.\n"))
+		}
+
 	case "PMSG":
 		fmt.Printf("Personal Message")
 	case "EXIT":
 		fmt.Printf("EXIT")
 	default:
 		// Handle unknown commands
-		fmt.Printf("Unknown command received from %s: %s\n", msg.from, messageText)
+		fmt.Printf("Unknown command received from %s: %s\n", msg.from, msg.from)
 	}
 }
 
@@ -215,7 +266,7 @@ func main() {
 	go func() {
 		for msg := range server.messageChannel {
 			fmt.Printf("Received Message from %s: %s \n", msg.from, msg.payload)
-			server.handleMessage(msg)
+			server.handleMessage(&msg)
 		}
 	}()
 
