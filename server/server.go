@@ -170,16 +170,60 @@ func (s *Server) readLoop(conn net.Conn) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			fmt.Println("read error:", err)
-			continue
+			if err.Error() == "EOF" {
+				// Client closed the connection, handle it
+				fmt.Println("Client closed the connection.")
+				break
+			}
+			fmt.Println("Read error:", err)
+			break
 		}
 
+		// Process the message from the client
 		s.messageChannel <- Message{
 			from:    conn.RemoteAddr().String(),
 			payload: buffer[:n],
 			conn:    conn,
 		}
 	}
+}
+
+func getUserNameFromConnection(s *Server, c net.Conn) string {
+	var username string
+	for name, conn := range s.userNames {
+		if conn == c {
+			username = name
+			break
+		}
+	}
+	return username
+}
+
+func getConnFromUserName(s *Server, username string) (net.Conn, bool) {
+	conn, exists := s.userNames[username]
+	return conn, exists
+}
+
+func getFirstWord(m string) string {
+	// Convert the payload to a string and split it by spaces
+	words := strings.Fields(string(m))
+	if len(words) > 0 {
+		return words[0] // Return the first word (username)
+	}
+	return "" // Return an empty string if no words found
+}
+
+func removeFirstWord(m string) string {
+	// Find the position of the first space
+	firstSpaceIndex := strings.Index(m, " ")
+
+	// If there is no space, return an empty string (meaning no other words)
+	if firstSpaceIndex == -1 {
+		return ""
+	}
+
+	// Return the part of the string after the first word (everything after the first space)
+	return strings.TrimSpace(m[firstSpaceIndex+1:])
 }
 
 func (s *Server) handleMessage(msg *Message) {
@@ -194,19 +238,19 @@ func (s *Server) handleMessage(msg *Message) {
 			var errMsg string
 			switch errCode {
 			case ERR_USERNAME_TAKEN:
-				errMsg = "Username is already taken."
+				errMsg = "0"
 			case ERR_USERNAME_TOO_LONG:
-				errMsg = "Username is too long."
+				errMsg = "1"
 			case ERR_USERNAME_CONTAINS_SPACES:
-				errMsg = "Username contains spaces."
+				errMsg = "2"
 			case ERR_UNKNOWN_MESSAGE_FORMAT:
-				errMsg = "Unknown message format."
+				errMsg = "4"
 			default:
-				errMsg = "An unknown error occurred."
+				errMsg = "4"
 			}
 
 			// Send the error message back to the client
-			msg.conn.Write([]byte(fmt.Sprintf("Error: %s\n", errMsg)))
+			msg.conn.Write([]byte(fmt.Sprintf("ERR: %s\n", errMsg)))
 		} else {
 			var userList []string
 			for username := range s.userNames {
@@ -214,14 +258,14 @@ func (s *Server) handleMessage(msg *Message) {
 			}
 			numberOfUsers := len(s.userNames)
 
-			// Format the message as a string (could also use JSON if needed)
+			// Format the message as a string
 			userListMessage := fmt.Sprintf("%d %v\n", numberOfUsers, userList)
 
 			// Send the message to the current user
 			msg.conn.Write([]byte(userListMessage))
 
 			// Send message to all other users that username has joined chat.
-			newUserMessage := fmt.Sprintf("%s has joined the chat", msg.Content)
+			newUserMessage := fmt.Sprintf("%s has joined the chat\n", msg.Content)
 			for _, conn := range s.clients {
 				if conn != msg.conn {
 					conn.Write([]byte(newUserMessage))
@@ -231,14 +275,7 @@ func (s *Server) handleMessage(msg *Message) {
 		}
 
 	case "MESG":
-		// Find the username from the map using the connection
-		var username string
-		for name, conn := range s.userNames {
-			if conn == msg.conn {
-				username = name
-				break
-			}
-		}
+		username := getUserNameFromConnection(s, msg.conn)
 
 		if username != "" {
 			newUserMessage := fmt.Sprintf("%s: %s\n", username, msg.getMessageWithoutCommand())
@@ -252,12 +289,71 @@ func (s *Server) handleMessage(msg *Message) {
 		}
 
 	case "PMSG":
-		fmt.Printf("Personal Message")
+		// x -> y
+
+		// get x username based on their connection
+		x_username := getUserNameFromConnection(s, msg.conn)
+		if x_username == "" {
+			msg.conn.Write([]byte("Error: Username not found.\n"))
+			return
+		}
+		// get y the connection by getting the mapping of the user
+		// username message <- msg.getMessageWithoutCommand()
+		y_username := getFirstWord(msg.getMessageWithoutCommand())
+		y_conn, exist := getConnFromUserName(s, y_username)
+		if !exist {
+			msg.conn.Write([]byte(fmt.Sprintf("ERR %s\n", "3")))
+			return
+		}
+
+		// send message to user, including the user name of the client
+		// Get the actual message without the command and username
+		actualMessage := removeFirstWord(msg.getMessageWithoutCommand())
+
+		// Send the personal message to the specific user
+		y_conn.Write([]byte(fmt.Sprintf("Private message from %s: %s\n", x_username, actualMessage)))
+
 	case "EXIT":
-		fmt.Printf("EXIT")
+		// NOTE: I am not going to be using the username message that the client sends, i am going to be using the connection and the mappings to make sure it exist.
+
+		// EXIT username
+		// make sure the username exist
+		username := getUserNameFromConnection(s, msg.conn)
+		if username == "" {
+			msg.conn.Write([]byte("Error: Username not found.\n"))
+			return
+		}
+
+		// deregister username
+		delete(s.userNames, username)
+
+		// send ACK to client
+		var userList []string
+		for username := range s.userNames {
+			userList = append(userList, username)
+		}
+		numberOfUsers := len(s.userNames)
+
+		userListMessage := fmt.Sprintf("%d %v\n", numberOfUsers, userList)
+
+		msg.conn.Write([]byte(userListMessage))
+
+		// brodcast that username has left the chat
+		newUserMessage := fmt.Sprintf("%s has left the chat\n", username)
+		for _, conn := range s.clients {
+			if conn != msg.conn {
+				conn.Write([]byte(newUserMessage))
+			}
+		}
+
+		// NOTE: do not need to remove the client connection, since it will be dealth with in the defer acceptloop
+
+		// Close the connection
+		msg.conn.Close()
+
 	default:
-		// Handle unknown commands
-		fmt.Printf("Unknown command received from %s: %s\n", msg.from, msg.from)
+		msg.conn.Write([]byte(fmt.Sprintf("ERR: %s\n", "4")))
+
 	}
 }
 
