@@ -13,90 +13,144 @@ const (
 	TYPE     = "tcp"
 )
 
-// Read user input from stdin and return the trimmed string
-func readUserInput() string {
-	reader := bufio.NewReader(os.Stdin)
-	userInput, err := reader.ReadString('\n')
-
-	if err != nil {
-		fmt.Println("Error reading input:", err)
-		os.Exit(1) // Exit if there's an error reading input
-	}
-
-	trimmedInput := strings.TrimSpace(userInput)
-	return trimmedInput
+type Client struct {
+	conn     net.Conn
+	username string
 }
 
-func connectToServer(userName string) {
-	// get the TCP ADDR
-	tcpServer, err := net.ResolveTCPAddr(TYPE, HOSTPORT)
+func NewClient() *Client {
+	return &Client{}
+}
+
+func (c *Client) Connect() error {
+	conn, err := net.Dial(TYPE, HOSTPORT)
 	if err != nil {
-		println("ResolveTCPAddr failed:", err.Error())
-		os.Exit(1)
+		return err
 	}
+	c.conn = conn
+	return nil
+}
 
-	// connect to server
-	conn, err := net.DialTCP(TYPE, nil, tcpServer)
+func (c *Client) Register(username string) error {
+	c.username = username
+	_, err := c.conn.Write([]byte("REG " + strings.TrimSpace(username) + "\n")) // Trim whitespace
 	if err != nil {
-		println("Dial failed:", err.Error())
-		os.Exit(1)
+		return err
 	}
+	return nil
+}
 
-	// Ensure connection is closed when function returns
-	defer conn.Close()
-
-	// register with username
-	registerString := fmt.Sprintf("REG %s", userName)
-	_, err = conn.Write([]byte(registerString))
+// Read a single response from the server
+func (c *Client) ReadResponse() (string, error) {
+	buffer := make([]byte, 2048)
+	n, err := c.conn.Read(buffer)
 	if err != nil {
-		println("Write data failed:", err.Error())
-		os.Exit(1)
+		return "", err
 	}
+	return string(buffer[:n]), nil
+}
 
-	// buffer to get data
-	received := make([]byte, 1024)
-	_, err = conn.Read(received)
-	if err != nil {
-		println("Read data failed:", err.Error())
-		os.Exit(1)
-	}
-
-	println("Received message:", string(received))
-
-	// Loop to keep the connection open and allow further interaction
+func (c *Client) ReadLoop() {
 	for {
-		fmt.Println("Enter a message to send to the server or type 'exit' to close the connection:")
-		message := readUserInput()
-
-		if message == "EXIT" {
-			fmt.Println("Closing connection...")
-			break
-		}
-
-		_, err = conn.Write([]byte(message))
+		// Read the response from the server
+		buffer := make([]byte, 2048)
+		n, err := c.conn.Read(buffer)
 		if err != nil {
-			println("Write data failed:", err.Error())
+			fmt.Println("Error reading from server:", err)
 			break
 		}
 
-		received := make([]byte, 1024)
-		_, err = conn.Read(received)
-		if err != nil {
-			println("Read data failed:", err.Error())
-			break
-		}
-
-		println("Received from server:", string(received))
+		// Convert the buffer to a string and print it
+		serverMessage := string(buffer[:n])
+		fmt.Print(serverMessage)
 	}
+}
 
+// Write messages to the server
+func (c *Client) WriteLoop() {
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		message := scanner.Text()
+		if strings.TrimSpace(message) == "" {
+			continue
+		}
+
+		// Send the message to the server
+		_, err := c.conn.Write([]byte(message + "\n"))
+		if err != nil {
+			fmt.Println("Error sending message:", err)
+			break
+		}
+
+		// If the client sends "EXIT", close the connection
+		if strings.HasPrefix(message, "EXIT") {
+			break
+		}
+	}
+}
+
+// Close the connection when finished
+func (c *Client) Close() {
+	c.conn.Close()
 }
 
 func main() {
-	// Ask for the username before making the TCP connection
-	fmt.Println("Enter your username: ")
-	userName := readUserInput()
+	client := NewClient()
 
-	// Establish the TCP connection and send the username
-	connectToServer(userName)
+	// Connect to the server
+	err := client.Connect()
+	if err != nil {
+		fmt.Println("Failed to connect to the server:", err)
+		os.Exit(1)
+	}
+
+	scanner := bufio.NewScanner(os.Stdin)
+
+	// Registration loop
+	for {
+		fmt.Print("Enter your username: ")
+		scanner.Scan()
+		username := scanner.Text()
+
+		err = client.Register(username)
+		if err != nil {
+			fmt.Println("Failed to register username:", err)
+			return
+		}
+
+		// Wait for server response
+		response, err := client.ReadResponse()
+		if err != nil {
+			fmt.Println("Failed to receive response:", err)
+			return
+		}
+
+		// Handle server response
+		if strings.HasPrefix(response, "ERR") {
+			if strings.Contains(response, "0") {
+				fmt.Println("Error: Username already taken. Please try a different username.")
+			} else if strings.Contains(response, "1") {
+				fmt.Println("Error: Username too long. Please enter a username shorter than 20 characters.")
+			} else if strings.Contains(response, "2") {
+				fmt.Println("Error: Username contains spaces. Please enter a username without spaces.")
+			} else {
+				fmt.Println("Unknown error. Please try again.")
+			}
+			// Prompt for a new username
+			continue
+		} else {
+			// Registration successful
+			fmt.Println(response) // Print any welcome message from the server
+			break
+		}
+	}
+
+	// Start reading and writing concurrently
+	go client.ReadLoop()
+	client.WriteLoop()
+
+	defer client.Close()
+
+	// When WriteLoop ends (EXIT), the program terminates
+	fmt.Println("Disconnected from server.")
 }
-
