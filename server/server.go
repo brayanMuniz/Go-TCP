@@ -96,6 +96,13 @@ func (s *Server) parseMessage(msg *Message) {
 	// Split the payload into words
 	words := strings.Fields(string(msg.payload))
 
+	// Check if theres just 1 word. i.e EXIT
+	if len(words) == 1 {
+		msg.Command = words[0]
+		msg.Content = ""
+		return
+	}
+
 	// Check if there are at least two words
 	if len(words) < 2 {
 		msg.Command = ""
@@ -170,15 +177,15 @@ func (s *Server) readLoop(conn net.Conn) {
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			if err.Error() == "EOF" {
-				// Client closed the connection, handle it
-				fmt.Println("Client closed the connection.")
+			if strings.Contains(err.Error(), "use of closed network connection") || err.Error() == "EOF" {
+				fmt.Println("Client closed the connection, Exiting... ")
 				break
 			}
 			fmt.Println("Read error:", err)
 			break
 		}
 
+		// How does this work?
 		// Process the message from the client
 		s.messageChannel <- Message{
 			from:    conn.RemoteAddr().String(),
@@ -226,9 +233,21 @@ func removeFirstWord(m string) string {
 	return strings.TrimSpace(m[firstSpaceIndex+1:])
 }
 
+// Notify users about a message, excluding the sender
+func (s *Server) notifyUsers(message string, excludeConn net.Conn) {
+	for _, conn := range s.clients {
+		if conn != excludeConn {
+			conn.Write([]byte(message))
+		}
+	}
+}
+
 func (s *Server) handleMessage(msg *Message) {
+	// WARNING: EXIT does not work here because I am tyring to parse 2 things.
+
 	// Parse the message into command and username
 	s.parseMessage(msg)
+	fmt.Println("COMMAND: ", msg.Command)
 
 	switch msg.Command {
 	case "REG":
@@ -324,36 +343,25 @@ func (s *Server) handleMessage(msg *Message) {
 			return
 		}
 
-		// deregister username
+		// Remove the user and broadcast the exit message
 		delete(s.userNames, username)
+		s.notifyUsers(fmt.Sprintf("%s has left the chat\n", username), msg.conn)
 
-		// send ACK to client
+		// Create Ack
 		var userList []string
 		for username := range s.userNames {
 			userList = append(userList, username)
 		}
-		numberOfUsers := len(s.userNames)
 
-		userListMessage := fmt.Sprintf("%d %v\n", numberOfUsers, userList)
+		ACK := fmt.Sprintf("%d %v\n", len(s.userNames), userList)
 
-		msg.conn.Write([]byte(userListMessage))
-
-		// brodcast that username has left the chat
-		newUserMessage := fmt.Sprintf("%s has left the chat\n", username)
-		for _, conn := range s.clients {
-			if conn != msg.conn {
-				conn.Write([]byte(newUserMessage))
-			}
-		}
-
-		// NOTE: do not need to remove the client connection, since it will be dealth with in the defer acceptloop
-
-		// Close the connection
+		// send ACK to client and close the connection
+		msg.conn.Write([]byte(ACK))
 		msg.conn.Close()
+		return
 
 	default:
 		msg.conn.Write([]byte(fmt.Sprintf("ERR: %s\n", "4")))
-
 	}
 }
 

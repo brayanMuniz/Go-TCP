@@ -50,19 +50,25 @@ func (c *Client) ReadResponse() (string, error) {
 	return string(buffer[:n]), nil
 }
 
+// Read messages from the server in a loop
 func (c *Client) ReadLoop() {
 	for {
 		// Read the response from the server
 		buffer := make([]byte, 2048)
 		n, err := c.conn.Read(buffer)
 		if err != nil {
+			// NOTE: This might be the worst way to handle this, but it gets the job done.
+			if strings.Contains(err.Error(), "use of closed network connection") || strings.Contains(err.Error(), "EOF") {
+				fmt.Println("Connection closed. Exiting read loop.")
+				return
+			}
 			fmt.Println("Error reading from server:", err)
 			break
 		}
 
 		// Convert the buffer to a string and print it
 		serverMessage := string(buffer[:n])
-		fmt.Print(serverMessage)
+		fmt.Println(serverMessage)
 	}
 }
 
@@ -84,7 +90,18 @@ func (c *Client) WriteLoop() {
 
 		// If the client sends "EXIT", close the connection
 		if strings.HasPrefix(message, "EXIT") {
-			break
+			// Wait for server response (ACK)
+			response, err := c.ReadResponse()
+			if err != nil {
+				// WARNING:
+				// fmt.Println("Failed to receive response:", err)
+				return
+			}
+
+			fmt.Println(response)
+
+			c.Close() // Immediately close the connection when "EXIT" is sent
+			return    // Break out of the loop and return
 		}
 	}
 }
@@ -148,8 +165,6 @@ func main() {
 	// Start reading and writing concurrently
 	go client.ReadLoop()
 	client.WriteLoop()
-
-	defer client.Close()
 
 	// When WriteLoop ends (EXIT), the program terminates
 	fmt.Println("Disconnected from server.")
