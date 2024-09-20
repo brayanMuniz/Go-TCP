@@ -68,7 +68,12 @@ func (c *Client) ReadLoop() {
 
 		// Convert the buffer to a string and print it
 		serverMessage := string(buffer[:n])
-		fmt.Println(serverMessage)
+
+		if strings.HasPrefix(serverMessage, "ERR") && strings.Contains(serverMessage, "3") {
+			fmt.Println("Error: user not in chat.")
+		} else {
+			fmt.Println(serverMessage)
+		}
 	}
 }
 

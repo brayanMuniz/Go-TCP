@@ -166,9 +166,19 @@ func (s *Server) addUserNameToClient(msg *Message) int {
 }
 
 func (s *Server) removeClient(conn net.Conn) {
-	addr := conn.RemoteAddr()
-	delete(s.clients, addr) // Remove the client from the map
-	fmt.Printf("Client %s disconnected.\n", addr)
+	clientAddr := conn.RemoteAddr()
+
+	// check if the client disconnected without using EXIT
+	// if the clients username is still in the map, remove it.
+	for u, c := range s.userNames {
+		if c == conn {
+			fmt.Printf("Client %s disconnected without EXIT, removing username, %s.\n", clientAddr, u)
+			delete(s.userNames, u)
+		}
+	}
+
+	delete(s.clients, clientAddr) // Remove the client from the map
+	fmt.Printf("Client %s disconnected.\n", clientAddr)
 }
 
 func (s *Server) readLoop(conn net.Conn) {
@@ -185,7 +195,6 @@ func (s *Server) readLoop(conn net.Conn) {
 			break
 		}
 
-		// How does this work?
 		// Process the message from the client
 		s.messageChannel <- Message{
 			from:    conn.RemoteAddr().String(),
@@ -253,7 +262,7 @@ func (s *Server) handleMessage(msg *Message) {
 	case "REG":
 		fmt.Printf("Handling username for %s\n", msg.from)
 		errCode := s.addUserNameToClient(msg)
-		if errCode != -1 {
+		if errCode != -1 { // -1 means that all is well
 			var errMsg string
 			switch errCode {
 			case ERR_USERNAME_TAKEN:
@@ -271,17 +280,15 @@ func (s *Server) handleMessage(msg *Message) {
 			// Send the error message back to the client
 			msg.conn.Write([]byte(fmt.Sprintf("ERR: %s\n", errMsg)))
 		} else {
+			// Create the ACK, format it and send it to the user
 			var userList []string
 			for username := range s.userNames {
 				userList = append(userList, username)
 			}
 			numberOfUsers := len(s.userNames)
 
-			// Format the message as a string
-			userListMessage := fmt.Sprintf("%d %v\n", numberOfUsers, userList)
-
-			// Send the message to the current user
-			msg.conn.Write([]byte(userListMessage))
+			ACK := fmt.Sprintf("ACK %d %v\n", numberOfUsers, userList)
+			msg.conn.Write([]byte(ACK))
 
 			// Send message to all other users that username has joined chat.
 			newUserMessage := fmt.Sprintf("%s has joined the chat\n", msg.Content)
