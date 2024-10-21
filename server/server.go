@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	HOSTPORT = "localhost:8080"
+	HOSTPORT = "0.0.0.0:8080"
 	TYPE     = "tcp"
 
 	// Error codes
@@ -252,8 +252,6 @@ func (s *Server) notifyUsers(message string, excludeConn net.Conn) {
 }
 
 func (s *Server) handleMessage(msg *Message) {
-	// WARNING: EXIT does not work here because I am tyring to parse 2 things.
-
 	// Parse the message into command and username
 	s.parseMessage(msg)
 	fmt.Println("COMMAND: ", msg.Command)

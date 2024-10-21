@@ -9,8 +9,7 @@ import (
 )
 
 const (
-	HOSTPORT = "localhost:8080"
-	TYPE     = "tcp"
+	TYPE = "tcp"
 )
 
 type Client struct {
@@ -22,8 +21,8 @@ func NewClient() *Client {
 	return &Client{}
 }
 
-func (c *Client) Connect() error {
-	conn, err := net.Dial(TYPE, HOSTPORT)
+func (c *Client) Connect(serverAddress string) error {
+	conn, err := net.Dial(TYPE, serverAddress)
 	if err != nil {
 		return err
 	}
@@ -71,6 +70,8 @@ func (c *Client) ReadLoop() {
 
 		if strings.HasPrefix(serverMessage, "ERR") && strings.Contains(serverMessage, "3") {
 			fmt.Println("Error: user not in chat.")
+		} else if strings.HasPrefix(serverMessage, "ERR") && strings.Contains(serverMessage, "4") {
+			fmt.Println("Error: Invalid Message Type.")
 		} else {
 			fmt.Println(serverMessage)
 		}
@@ -98,8 +99,6 @@ func (c *Client) WriteLoop() {
 			// Wait for server response (ACK)
 			response, err := c.ReadResponse()
 			if err != nil {
-				// WARNING:
-				// fmt.Println("Failed to receive response:", err)
 				return
 			}
 
@@ -117,10 +116,18 @@ func (c *Client) Close() {
 }
 
 func main() {
+	// Check if the server address is provided
+	if len(os.Args) != 2 {
+		fmt.Println("Usage: ./client <server_address>")
+		os.Exit(1)
+	}
+
+	serverAddress := os.Args[1] + ":8080" // Default port 8080
+
 	client := NewClient()
 
 	// Connect to the server
-	err := client.Connect()
+	err := client.Connect(serverAddress)
 	if err != nil {
 		fmt.Println("Failed to connect to the server:", err)
 		os.Exit(1)
